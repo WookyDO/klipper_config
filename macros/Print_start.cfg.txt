@@ -1,0 +1,73 @@
+[gcode_macro PRINT_START]
+default_parameter_BED_TEMP: 100
+default_parameter_EXTRUDER_TEMP: 245
+default_parameter_CHAMBER_TEMP: 50
+default_parameter_SOAK: 30
+default_parameter_DELTA: 10
+variable_redo_qgl: 1
+gcode:
+    # get actual temp from the bed either use an external sensor
+    # or the sensor from the bed heater
+    # external sensor must be named bed
+    {% if 'temperature_sensor bed' in printer %}
+      {% set actTemp = printer['temperature_sensor bed'].temperature %}
+      {% set targetTemp = BED_TEMP|int - DELTA|int %}
+    {% else %}
+      {% set actTemp = printer.heater_bed.temperature %}
+      {% set targetTemp = BED_TEMP %}
+    {% endif %}
+    # check if filament is loaded 
+    {% if printer.save_variables.variables.filament_loaded|int == 1 %}
+      # switch knob to red (blinking)
+      # use solid red in the moment
+      _LCD_RED 
+      M141 S{CHAMBER_TEMP|int} ; set exhaust fan
+      _CASELIGHT_ON
+      G28                 ; home to get toolhead in the middle
+      # check if soak time is 0 or if the bed is still hotend
+      # if the bed is within the Variable DELTA C to the target temp no heat soaak needs to be performed
+      TIMER
+      {% if (SOAK|int) <= 0 or (actTemp|int >= targetTemp|int) %}
+        M117 Heating Extruder
+        {action_respond_info(" Bed act =%3d target=%3d no heat soak needed" % (actTemp|int,targetTemp|int))}
+        M140 S{BED_TEMP|int}      ; set temp only to be sure    
+        M104 S{EXTRUDER_TEMP|int} ; heat extruder and wait
+        SET_GCODE_VARIABLE MACRO=PRINT_START VARIABLE=redo_qgl VALUE=0
+      {% else %}
+        M117 Heating Bed
+        {action_respond_info(" Bed act temp=%3d target=%3d heat soak needed" % (actTemp|int,targetTemp|int))}
+        M106 S90  ; switch part cooling ~35% to move air in chamber
+        M190 S{BED_TEMP|int}  ; heat bed and wait
+          {% for timer in range( (SOAK|int * 60),0,-1) %}
+            M117 Heat soak {(timer|int // 60) }:{ '%02d' %  (timer|int - (60 * (timer|int // 60)))}
+            {% if (timer|int) == 120 + (EXTRUDER_TEMP|int) - 240  %}
+              M104 S{EXTRUDER_TEMP}
+            {% endif %}
+            G4 P1000
+          {% endfor %}
+          M117 Preheat done
+          SET_GCODE_VARIABLE MACRO=PRINT_START VARIABLE=redo_qgl VALUE=1
+        {% endif %}
+      M106 S0  ; turn off part cooling fan
+      # switch knob to red (solid)
+      _LCD_RED
+      G21  ; set units to millimeters
+      G90  ; use absolute coordinates
+      M83  ; use relative distances for extrusion
+      _G32 ; home & QGL
+      # Extruder is disabled while using the probe
+      # need to wait to reach target again
+      M117 Heating Extruder
+      M109 S{EXTRUDER_TEMP|int}
+      NOZZLECLEAN
+      G28 Z
+      # Extruder is disabled while using the probe
+      # need to wait to reach target again
+      M117 Heating Extruder
+      M109 S{EXTRUDER_TEMP|int}
+      PRIME_LINE
+      UPDATE_DELAYED_GCODE ID=_CLEAR_DISPLAY DURATION=1
+   {% else %}
+     { action_respond_info("No Filament loaded, print canceled!") }
+     CANCEL_PRINT
+   {% endif%}
